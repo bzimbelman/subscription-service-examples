@@ -1,0 +1,66 @@
+# 03-secure-channels — channel-security strict mode.
+#
+# Standalone compose; same shape as 01-hello-world, with
+# SUBSCRIPTION_SERVICE_CHANNEL_SECURITY flipped to `strict`. In strict mode:
+#   - `rest-hook` endpoints MUST be https://
+#   - private / loopback / RFC1918 addresses are rejected unless allowlisted
+#   - webhook deliveries are signed: X-Subscription-Service-Signature: sha256=<hex>
+#   - allowlist comes from SUBSCRIPTION_SERVICE_CHANNEL_ALLOWLIST
+#
+# See engine docs/architecture.md "Channel security" for the full design.
+
+services:
+  hapi-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: sc-hapi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      POSTGRES_DB: ${POSTGRES_DB:-hapi}
+    volumes:
+      - hapi-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [sc]
+
+  hapi:
+    image: ${HAPI_IMAGE:-ghcr.io/example-org/subscription-service-hapi:v1.0.0}
+    container_name: sc-hapi
+    restart: unless-stopped
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/${POSTGRES_DB:-hapi}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hapi}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: "strict"
+      # Allowlist: example egress targets. The placeholders here are
+      # obvious test values — replace with your real downstream hosts.
+      SUBSCRIPTION_SERVICE_CHANNEL_ALLOWLIST: "https://hooks.example-downstream.test/*,https://relay.example-partner.test/*"
+      # HMAC signing key. In production mount via a Secret; here we read
+      # it from .env so the recipe is one-file copy-able.
+      SUBSCRIPTION_SERVICE_CHANNEL_HMAC_SECRET: ${CHANNEL_HMAC_SECRET:-replace-me}
+      SUBSCRIPTION_SERVICE_VALIDATION_MODE: "enforce"
+      SUBSCRIPTION_SERVICE_MULTITENANCY: "disabled"
+      SUBSCRIPTION_SERVICE_AUTH_ENABLED: "false"
+    ports:
+      - "${HAPI_HOST_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [sc]
+
+volumes:
+  hapi-pg-data:
+
+networks:
+  sc:
+    driver: bridge

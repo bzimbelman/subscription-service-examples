@@ -1,0 +1,70 @@
+# 06-gcp-gke — GKE values overlay.
+
+hapi:
+  replicas: 3
+  resources:
+    requests: { cpu: 1, memory: 4Gi }
+    limits: { cpu: 4, memory: 8Gi }
+  podAntiAffinity: soft
+
+postgres:
+  enabled: false
+
+externalPostgres:
+  enabled: true
+  # Cloud SQL via the Cloud SQL Auth Proxy sidecar pattern, OR a private
+  # IP on the cluster's VPC. Recipe assumes private IP for simplicity;
+  # for IAM-DB-auth set externalPostgres.iamAuth: true.
+  host: REPLACE_WITH_CLOUDSQL_PRIVATE_IP
+  port: 5432
+  database: hapi
+  user: hapi
+  # Workload Identity Federation feeds the password from Secret Manager
+  # via a CSI driver mount or external-secrets.
+  passwordSecret: hapi-cloudsql-credentials
+
+storage:
+  # pd-balanced is the GKE default for "balanced cost/perf"; pd-ssd for
+  # higher IOPS if your matchbox cache is large.
+  storageClassName: standard-rwo
+  size: 50Gi
+
+ingress:
+  enabled: true
+  # GKE 1.30+ ships gateway-api by default; the chart also supports the
+  # older GCE ingress class if you prefer.
+  className: gce
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: REPLACE_WITH_RESERVED_IP_NAME
+    networking.gke.io/managed-certificates: subscription-service-cert
+    networking.gke.io/v1beta1.FrontendConfig: subscription-service-frontend
+  hosts:
+    - host: subscription-service.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+serviceAccount:
+  create: true
+  name: subscription-service
+  # Workload Identity binds this KSA to the GSA below.
+  annotations:
+    iam.gke.io/gcp-service-account: REPLACE_WITH_GSA_EMAIL
+
+mllp:
+  enabled: true
+  service:
+    type: LoadBalancer
+    annotations:
+      cloud.google.com/load-balancer-type: Internal
+      networking.gke.io/load-balancer-type: Internal
+    port: 2575
+
+config:
+  validationMode: enforce
+  channelSecurity: strict
+  multitenancy: enabled
+  auth:
+    enabled: true
+    issuer: REPLACE_WITH_OIDC_ISSUER_URL

@@ -1,0 +1,17 @@
+{
+  "resourceType": "Subscription",
+  "identifier": [
+    {
+      "system": "urn:example:subscription-service:examples",
+      "value": "01-hello-world-patient-firehose"
+    }
+  ],
+  "status": "active",
+  "reason": "01-hello-world recipe: fire on every Patient create",
+  "criteria": "Patient?",
+  "channel": {
+    "type": "rest-hook",
+    "endpoint": "http://host.docker.internal:8000/hello-webhook",
+    "payload": "application/fhir+json"
+  }
+}
