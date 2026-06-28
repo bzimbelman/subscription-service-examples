@@ -1,0 +1,68 @@
+# 07-azure-aks — AKS values overlay.
+
+hapi:
+  replicas: 3
+  resources:
+    requests: { cpu: 1, memory: 4Gi }
+    limits: { cpu: 4, memory: 8Gi }
+  podAntiAffinity: soft
+
+postgres:
+  enabled: false
+
+externalPostgres:
+  enabled: true
+  # Azure Database for PostgreSQL Flexible Server (private endpoint).
+  host: REPLACE_WITH_PGFLEX_FQDN
+  port: 5432
+  database: hapi
+  user: hapi
+  # Password sourced from Azure Key Vault via the Secrets Store CSI driver
+  # (Workload Identity-bound).
+  passwordSecret: hapi-pgflex-credentials
+
+storage:
+  # managed-csi-premium for SSDs; managed-csi for cheaper general-purpose.
+  storageClassName: managed-csi-premium
+  size: 50Gi
+
+ingress:
+  enabled: true
+  # Application Gateway Ingress Controller (AGIC). Alternative: nginx +
+  # an Azure Internal LB — change className and annotations accordingly.
+  className: azure-application-gateway
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/backend-protocol: http
+    appgw.ingress.kubernetes.io/health-probe-path: /actuator/health/readiness
+    appgw.ingress.kubernetes.io/appgw-ssl-certificate: REPLACE_WITH_APPGW_CERT_NAME
+  hosts:
+    - host: subscription-service.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+serviceAccount:
+  create: true
+  name: subscription-service
+  # Azure AD Workload Identity.
+  annotations:
+    azure.workload.identity/client-id: REPLACE_WITH_USER_ASSIGNED_MI_CLIENT_ID
+
+mllp:
+  enabled: true
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      service.beta.kubernetes.io/azure-load-balancer-internal-subnet: REPLACE_WITH_AKS_SUBNET_NAME
+    port: 2575
+
+config:
+  validationMode: enforce
+  channelSecurity: strict
+  multitenancy: enabled
+  auth:
+    enabled: true
+    issuer: REPLACE_WITH_OIDC_ISSUER_URL

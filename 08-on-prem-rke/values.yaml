@@ -1,0 +1,70 @@
+# 08-on-prem-rke — Rancher RKE2 on bare metal.
+#
+# RKE2 ships Traefik as the default ingress controller and `local-path`
+# as the default storage class. This values overlay leans on both, plus
+# MetalLB for the MLLP LoadBalancer.
+
+hapi:
+  replicas: 2
+  resources:
+    requests: { cpu: 1, memory: 4Gi }
+    limits: { cpu: 4, memory: 8Gi }
+  podAntiAffinity: soft
+
+# In-cluster Postgres is the typical bare-metal pattern (no managed DB).
+# For HA, swap this for a Stolon / Postgres-Operator setup and switch
+# postgres.enabled to false with externalPostgres pointing there.
+postgres:
+  enabled: true
+  storage:
+    storageClassName: local-path
+    size: 50Gi
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: 2, memory: 4Gi }
+
+storage:
+  storageClassName: local-path
+  size: 50Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    # Force HTTPS + redirect HTTP -> HTTPS at the Traefik level.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: subscription-service.internal.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts: [subscription-service.internal.example]
+      # Created out-of-band; cert-manager + an internal CA is a typical
+      # bare-metal setup.
+      secretName: subscription-service-tls
+
+serviceAccount:
+  create: true
+  name: subscription-service
+
+mllp:
+  enabled: true
+  service:
+    # Requires MetalLB (or kube-vip / equivalent) configured on the cluster
+    # with at least one IP in the address pool. For bare metal without an
+    # LB integration, set type: NodePort and point upstream HL7 senders at
+    # the node IPs directly.
+    type: LoadBalancer
+    annotations:
+      metallb.universe.tf/address-pool: subscription-service-pool
+    port: 2575
+
+config:
+  validationMode: enforce
+  channelSecurity: strict
+  multitenancy: enabled
+  auth:
+    enabled: true
+    issuer: REPLACE_WITH_OIDC_ISSUER_URL

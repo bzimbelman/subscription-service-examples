@@ -1,0 +1,84 @@
+# 05-aws-eks — production-grade values overlay for AWS EKS.
+#
+# Only fields that DIFFER from the engine chart's defaults
+# (deploy/k8s/charts/subscription-service/values.yaml) are set here. Keep
+# this short: the rest is the upstream defaults.
+
+# -- HAPI --------------------------------------------------------------------
+hapi:
+  replicas: 3
+  resources:
+    requests: { cpu: 1, memory: 4Gi }
+    limits: { cpu: 4, memory: 8Gi }
+  podAntiAffinity: soft   # spread replicas across AZs
+
+# -- Postgres (use RDS in production; chart-managed Postgres is for dev) -----
+postgres:
+  enabled: false
+
+externalPostgres:
+  enabled: true
+  # RDS endpoint. Fill in via `helm install ... --set externalPostgres.host=...`
+  # or a values-override file; do not commit real hostnames.
+  host: REPLACE_WITH_RDS_WRITER_ENDPOINT
+  port: 5432
+  database: hapi
+  user: hapi
+  # Password from AWS Secrets Manager via External Secrets Operator. Recommended:
+  # External Secrets Operator (https://external-secrets.io) creates the K8s
+  # Secret from Secrets Manager; this chart consumes the Secret by name.
+  passwordSecret: hapi-rds-credentials
+
+# -- Persistent storage (matchbox cache, IG packages) -----------------------
+storage:
+  storageClassName: gp3
+  # gp3 default-baseline 3000 IOPS / 125 MB/s is plenty for the matchbox
+  # cache; tune up if you preload many large IGs.
+  size: 50Gi
+
+# -- Ingress (AWS Load Balancer Controller / ALB) ---------------------------
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # Provide ACM cert ARN via --set or env-specific values overlay.
+    alb.ingress.kubernetes.io/certificate-arn: REPLACE_WITH_ACM_CERT_ARN
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness
+  hosts:
+    - host: subscription-service.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+# -- ServiceAccount with IRSA (IAM Roles for Service Accounts) --------------
+serviceAccount:
+  create: true
+  name: subscription-service
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_WITH_IAM_ROLE_ARN
+
+# -- MLLP listener (NLB; raw TCP, not part of the HTTPS ingress) ------------
+mllp:
+  enabled: true
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    port: 2575
+
+# -- Feature toggles --------------------------------------------------------
+config:
+  validationMode: enforce
+  channelSecurity: strict
+  multitenancy: enabled
+  auth:
+    enabled: true
+    # Set issuer/JWKS via env-specific overlay; do not commit prod issuer here.
+    issuer: REPLACE_WITH_OIDC_ISSUER_URL

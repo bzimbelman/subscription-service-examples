@@ -1,0 +1,89 @@
+# 02-multi-facility — multi-tenancy on.
+#
+# Same shape as 01-hello-world, with SUBSCRIPTION_SERVICE_MULTITENANCY
+# flipped to `enabled`. Each request must carry a tenant claim (JWT) or
+# `X-Test-Tenant` header (test mode); HAPI partitions resources per tenant.
+# See engine docs/multi-tenancy.md for the full design.
+
+services:
+  hapi-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: mt-hapi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      POSTGRES_DB: ${POSTGRES_DB:-hapi}
+    volumes:
+      - hapi-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [mt]
+
+  hapi:
+    image: ${HAPI_IMAGE:-ghcr.io/example-org/subscription-service-hapi:v1.0.0}
+    container_name: mt-hapi
+    restart: unless-stopped
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/${POSTGRES_DB:-hapi}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hapi}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      # The recipe's reason for existing:
+      SUBSCRIPTION_SERVICE_MULTITENANCY: "enabled"
+      SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM: "tenant"
+      # TEST mode reads tenant from `X-Test-Tenant` instead of the JWT.
+      # Convenient for ./verify.sh; DO NOT leave on in real environments.
+      SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE: "true"
+      SUBSCRIPTION_SERVICE_VALIDATION_MODE: "warn"
+      SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: "permissive"
+      SUBSCRIPTION_SERVICE_AUTH_ENABLED: "false"
+    ports:
+      - "${HAPI_HOST_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [mt]
+
+  matchbox:
+    image: ${MATCHBOX_IMAGE:-europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox:v3.9.13}
+    container_name: mt-matchbox
+    restart: unless-stopped
+    ports:
+      - "${MATCHBOX_HOST_PORT:-18081}:8080"
+    networks: [mt]
+
+  interface-engine:
+    image: ${INTERFACE_ENGINE_IMAGE:-ghcr.io/example-org/subscription-service-interface-engine:v1.0.0}
+    container_name: mt-interface-engine
+    restart: unless-stopped
+    depends_on:
+      hapi:
+        condition: service_healthy
+    environment:
+      HAPI_BASE_URL: http://hapi:8080/fhir
+      MATCHBOX_BASE_URL: http://matchbox:8080/matchbox
+      MLLP_PORT: "2575"
+      # Per-facility MLLP routing: inspect MSH-4 (sending facility) and
+      # stamp the matching tenant on the Bundle before POSTing to HAPI.
+      IPF_TENANT_HEADER: "X-Test-Tenant"
+      IPF_TENANT_FROM: "MSH-4"
+      IPF_TENANT_MAP: "EXAMPLE_FACILITY_A=facility-a,EXAMPLE_FACILITY_B=facility-b"
+    ports:
+      - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
+    networks: [mt]
+
+volumes:
+  hapi-pg-data:
+
+networks:
+  mt:
+    driver: bridge

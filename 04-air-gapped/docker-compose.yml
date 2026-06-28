@@ -1,0 +1,92 @@
+# 04-air-gapped — no internet, IGs preloaded.
+#
+# Standalone compose. The engine's default config pulls FHIR Implementation
+# Guides (US Core, Subscriptions Backport) from packages.fhir.org on first
+# boot. In an air-gapped environment that won't work; the IGs must be
+# mirrored into ./igs/ (tarballs) and the engine pointed at the mirror.
+#
+# Every `image:` below is pinned to the internal registry, by digest. The
+# placeholder digests (0000...) are example-shaped; replace with the real
+# ones from your mirror.
+
+services:
+  hapi-db:
+    # Pin to your mirrored Postgres digest.
+    image: registry.internal.example/library/postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    container_name: ag-hapi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      POSTGRES_DB: ${POSTGRES_DB:-hapi}
+    volumes:
+      - hapi-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [ag]
+
+  hapi:
+    image: registry.internal.example/subscription-service/hapi@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    container_name: ag-hapi
+    restart: unless-stopped
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/${POSTGRES_DB:-hapi}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hapi}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      # Tarballs are mounted in; HAPI reads them at startup, never reaches
+      # out to packages.fhir.org.
+      SUBSCRIPTION_SERVICE_IG_OFFLINE: "true"
+      SUBSCRIPTION_SERVICE_IG_LOCAL_DIR: "/igs"
+      SUBSCRIPTION_SERVICE_VALIDATION_MODE: "enforce"
+    ports:
+      - "${HAPI_HOST_PORT:-18080}:8080"
+    volumes:
+      - ./igs:/igs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [ag]
+
+  matchbox:
+    image: registry.internal.example/ahdis/matchbox@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    container_name: ag-matchbox
+    restart: unless-stopped
+    environment:
+      MATCHBOX_OFFLINE: "true"
+      MATCHBOX_IG_LOCAL_DIR: "/igs"
+    ports:
+      - "${MATCHBOX_HOST_PORT:-18081}:8080"
+    volumes:
+      - ./igs:/igs:ro
+    networks: [ag]
+
+  interface-engine:
+    image: registry.internal.example/subscription-service/interface-engine@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    container_name: ag-interface-engine
+    restart: unless-stopped
+    depends_on:
+      hapi:
+        condition: service_healthy
+    environment:
+      HAPI_BASE_URL: http://hapi:8080/fhir
+      MATCHBOX_BASE_URL: http://matchbox:8080/matchbox
+      MLLP_PORT: "2575"
+    ports:
+      - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
+    networks: [ag]
+
+volumes:
+  hapi-pg-data:
+
+networks:
+  ag:
+    driver: bridge

@@ -1,0 +1,113 @@
+# 01-hello-world — minimal subscription-service stack.
+#
+# Brings up Postgres + HAPI + matchbox + interface-engine on a single host,
+# wired for MLLP ingress on :2575 and FHIR REST on :18080. A seed Subscription
+# gets POSTed to HAPI on first healthy boot.
+#
+# This file is standalone — `docker compose up -d` from this directory is
+# enough; you do NOT need to clone the engine repo for hello-world. The
+# images are the ones the engine publishes for the pinned ENGINE_VERSION
+# in .env.example.
+#
+# For the full set of engine env vars, see
+# https://github.com/example-org/subscription-service/blob/v1.0.0/deploy/docker/.env.example
+
+services:
+  hapi-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: hello-hapi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      POSTGRES_DB: ${POSTGRES_DB:-hapi}
+    volumes:
+      - hapi-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [hello]
+
+  hapi:
+    image: ${HAPI_IMAGE:-ghcr.io/example-org/subscription-service-hapi:v1.0.0}
+    container_name: hello-hapi
+    restart: unless-stopped
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/${POSTGRES_DB:-hapi}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hapi}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      # Hello-world toggles: every feature in its simplest setting.
+      SUBSCRIPTION_SERVICE_VALIDATION_MODE: "off"
+      SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: "permissive"
+      SUBSCRIPTION_SERVICE_MULTITENANCY: "disabled"
+      SUBSCRIPTION_SERVICE_AUTH_ENABLED: "false"
+    ports:
+      - "${HAPI_HOST_PORT:-18080}:8080"
+    volumes:
+      - ./seed:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [hello]
+
+  matchbox:
+    image: ${MATCHBOX_IMAGE:-europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox:v3.9.13}
+    container_name: hello-matchbox
+    restart: unless-stopped
+    ports:
+      - "${MATCHBOX_HOST_PORT:-18081}:8080"
+    networks: [hello]
+
+  interface-engine:
+    image: ${INTERFACE_ENGINE_IMAGE:-ghcr.io/example-org/subscription-service-interface-engine:v1.0.0}
+    container_name: hello-interface-engine
+    restart: unless-stopped
+    depends_on:
+      hapi:
+        condition: service_healthy
+    environment:
+      HAPI_BASE_URL: http://hapi:8080/fhir
+      MATCHBOX_BASE_URL: http://matchbox:8080/matchbox
+      MLLP_PORT: "2575"
+    ports:
+      - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
+      - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
+    networks: [hello]
+
+  # init-once sidecar: POSTs the seed Subscription, then exits. Idempotent
+  # because the seed Subscription is identified by a stable identifier.
+  seed-subscription:
+    image: curlimages/curl:8.10.1
+    container_name: hello-seed
+    depends_on:
+      hapi:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./seed:/seed:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        curl -fsS -X PUT \
+          -H 'Content-Type: application/fhir+json' \
+          --data-binary @/seed/subscription.json \
+          'http://hapi:8080/fhir/Subscription?identifier=urn:example:subscription-service:examples|01-hello-world-patient-firehose'
+        echo seeded
+    networks: [hello]
+
+volumes:
+  hapi-pg-data:
+
+networks:
+  hello:
+    driver: bridge
